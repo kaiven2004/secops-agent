@@ -1,5 +1,5 @@
 """
-SecOps-Copilot API — 多 Agent 协作版 FastAPI 服务
+SecOps-Copilot API v2 — 多 Agent 异步并发版
 启动: python api.py
 """
 import os, sys, json, time
@@ -8,12 +8,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import re
 
-# 导入多 Agent 核心
+sys.path.insert(0, str(Path(__file__).parent))
 from agent_main import (
     load_infra, Coordinator, AgentContext, AgentResult,
-    AlertAnalystAgent, CVEResearcherAgent, KnowledgeAgent, ReportAgent,
     FAISS_INDEX_PATH, ALERTS_PATH, CVE_DB_PATH,
 )
 
@@ -23,13 +21,12 @@ os.environ["HF_HOME"]            = str(CACHE_DIR)
 os.environ["TRANSFORMERS_CACHE"] = str(CACHE_DIR)
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-# 全局状态
 _state = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("[API] 正在初始化多 Agent 基础设施...")
+    print("[API] 正在初始化多 Agent 基础设施（异步并发版）...")
     index, texts, tokenizer, model, alerts, cve_db, client = load_infra()
     _state.update(dict(
         coordinator=Coordinator(client, alerts, cve_db, index, texts, tokenizer, model),
@@ -41,8 +38,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="SecOps-Copilot Multi-Agent API",
-    description="探真科技云原生安全运维 AI 助手 — 多 Agent 协作服务",
+    title="SecOps-Copilot Multi-Agent API v2",
+    description="探真科技云原生安全运维 AI 助手 — 异步并发多 Agent 协作服务",
     version="2.0.0",
     lifespan=lifespan,
 )
@@ -50,49 +47,60 @@ app = FastAPI(
 
 class AgentQuery(BaseModel):
     query: str
-    # 可选：指定要调用的 Agent
-    agents: list[str] = None   # ["AlertAnalyst", "Knowledge", "Report"] 或 None（自动路由）
 
 
-class AgentInfo(BaseModel):
-    name: str
-    description: str
+class PipelineRequest(BaseModel):
+    mode: str = "alert"       # alert | cve
+    alert_id: str = None
+    cve_id: str = None
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "2.0.0",
-            "alerts":    len(_state.get("alerts", {})),
-            "cve":       len(_state.get("cve", {})),
-            "chunks":    _state.get("chunks", 0)}
+    return {"status": "ok", "version": "2.0.0-async-multi-agent",
+            "alerts": len(_state.get("alerts", {})),
+            "cve":    len(_state.get("cve", {})),
+            "chunks": _state.get("chunks", 0)}
 
 
 @app.get("/api/v1/agents")
 async def list_agents():
-    """列出可用的 Agent 及其职责。"""
     agents = [
         {"name": "AlertAnalystAgent",  "description": "告警研判：分析告警等级、影响范围、攻击路径"},
         {"name": "CVEResearcherAgent", "description": "CVE 研究：漏洞分析、影响版本、修复方案"},
         {"name": "KnowledgeAgent",     "description": "知识检索：RAG 检索安全知识库，返回相关文档"},
         {"name": "ReportAgent",        "description": "报告生成：汇总各 Agent 结果，输出结构化安全报告"},
-        {"name": "Coordinator",        "description": "协调器：智能路由查询到对应 Agent，编排执行流程"},
+        {"name": "Coordinator",        "description": "协调器：智能路由查询 + 异步并发编排"},
     ]
     return {"agents": agents, "total": len(agents)}
 
 
 @app.post("/api/v1/agent/query", response_model=dict)
 async def agent_query(body: AgentQuery):
-    """提交安全问答，多 Agent 协作后返回最终报告。"""
+    """提交安全问答，多 Agent 异步并发后返回最终报告。"""
     if not _state.get("coordinator"):
         raise HTTPException(423, "服务未初始化")
     t0 = time.time()
     report = _state["coordinator"].run(body.query)
-    return {
-        "query":      body.query,
-        "answer":     report,
-        "latency_ms": round((time.time() - t0) * 1000),
-        "version":    "2.0.0-multi-agent",
-    }
+    return {"query": body.query, "answer": report,
+            "latency_ms": round((time.time() - t0) * 1000), "version": "2.0.0"}
+
+
+@app.post("/api/v1/pipeline/run", response_model=dict)
+async def pipeline_run(body: PipelineRequest):
+    """数据流水线接口：模拟 SOC 平台接收告警/CVE 并自动研判。"""
+    if not _state.get("coordinator"):
+        raise HTTPException(423, "服务未初始化")
+    coord = _state["coordinator"]
+
+    if body.mode == "alert" and body.alert_id:
+        result = coord._run_pipeline_alert(body.alert_id)
+    elif body.mode == "cve" and body.cve_id:
+        result = coord._run_pipeline_cve(body.cve_id)
+    else:
+        raise HTTPException(400, "请指定 mode + alert_id 或 cve_id")
+
+    return result
 
 
 @app.get("/api/v1/alerts/{alert_id}", response_model=dict)
@@ -113,16 +121,14 @@ async def get_cve(cve_id: str):
 
 @app.get("/api/v1/agent/stages", response_model=dict)
 async def agent_stages(query: str):
-    """调试接口：查看查询会被路由到哪些 Agent，以及每个 Agent 的独立输出。"""
+    """调试接口：查看查询的路由计划和每个 Agent 的中间输出。"""
     if not _state.get("coordinator"):
         raise HTTPException(423, "服务未初始化")
-
     coord = _state["coordinator"]
     plan = coord._classify_query(query)
 
-    # 准备上下文
-    alert_id  = re.search(r'ALERT-(\d+)', query)
-    cve_id    = re.search(r'CVE-\d{4}-\d{4,}', query, re.IGNORECASE)
+    alert_id  = __import__('re').search(r'ALERT-(\d+)', query)
+    cve_id    = __import__('re').search(r'CVE-\d{4}-\d{4,}', query, __import__('re').IGNORECASE)
     ctx = AgentContext(query=query)
     if alert_id:
         ctx.alert_data = coord.alerts.get(f"ALERT-{alert_id.group(1)}", {})
@@ -130,27 +136,25 @@ async def agent_stages(query: str):
         ctx.cve_data = coord.cve_db.get(cve_id.group(0).upper(), {})
 
     stages = []
-    for agent_name in plan:
+    parallel = [n for n in plan if n != "ReportAgent"]
+    for name in parallel:
         t0 = time.time()
         try:
-            if agent_name == "AlertAnalystAgent":
+            if name == "AlertAnalystAgent":
                 r = coord.alert_agent.run(ctx)
-            elif agent_name == "CVEResearcherAgent":
+            elif name == "CVEResearcherAgent":
                 r = coord.cve_agent.run(ctx)
-            elif agent_name == "KnowledgeAgent":
+            elif name == "KnowledgeAgent":
                 r = coord.kb_agent.run(ctx, coord.index, coord.tokenizer, coord.model, coord.texts)
             else:
-                continue  # ReportAgent 最后统一生成
-            stages.append({
-                "agent": agent_name,
-                "success": r.success,
-                "latency_ms": round((time.time() - t0) * 1000),
-                "output_preview": r.content[:300] if r.content else "",
-            })
+                continue
+            stages.append({"agent": name, "success": r.success,
+                          "latency_ms": round((time.time()-t0)*1000),
+                          "output_preview": r.content[:200]})
         except Exception as e:
-            stages.append({"agent": agent_name, "success": False, "error": str(e)})
+            stages.append({"agent": name, "success": False, "error": str(e)})
 
-    return {"query": query, "routing_plan": plan, "stages": stages}
+    return {"query": query, "routing_plan": plan, "parallel_stages": stages}
 
 
 if __name__ == "__main__":

@@ -1,16 +1,16 @@
 """
-SecOps-Copilot — 多 Agent 协作版
+SecOps-Copilot — 多 Agent 协作版（异步并发）
 架构：
-  Coordinator → 按查询类型路由到专业 Agent
+  Coordinator → 按查询类型路由到专业 Agent（并行执行）
     ├─ AlertAnalystAgent  → 告警分析与风险研判
     ├─ CVEResearcherAgent → CVE 漏洞研究与修复方案
     ├─ KnowledgeAgent     → 安全知识库 RAG 检索
     └─ ReportAgent        → 结构化报告生成
 """
-import os, sys, json, time, re
+import os, sys, json, time, re, asyncio
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Dict, Any, List
 import logging
 import faiss
 import numpy as np
@@ -67,7 +67,7 @@ class AgentContext:
     knowledge:  dict = field(default_factory=dict)
     analysis:   dict = field(default_factory=dict)
     final_report: str = ""
-    meta: dict = field(default_factory=dict)   # 跨 Agent 传递的元信息
+    meta: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -135,7 +135,7 @@ class AlertAnalystAgent:
   "severity": "critical/high/medium/low",
   "impact_scope": "影响范围描述",
   "attack_path": "攻击路径分析",
-  "risk_level": "风险等级数字 1-10"
+  "risk_level": 风险等级数字 1-10
 }
 
 只输出 JSON，不要任何其他内容。"""
@@ -147,8 +147,8 @@ class AlertAnalystAgent:
     def run(self, ctx: AgentContext) -> AgentResult:
         t0 = time.time()
         alert = ctx.alert_data
-        if not alert:
-            return AgentResult("AlertAnalyst", False, "无告警数据", latency_s=time.time()-t0)
+        if not alert or alert.get("status") == "not_found":
+            return AgentResult("AlertAnalyst", False, "无告警数据或告警不存在", latency_s=time.time()-t0)
 
         prompt = f"""分析以下安全告警：
 
@@ -172,9 +172,7 @@ IOC: {json.dumps(alert.get('ioc', {}), ensure_ascii=False)}
             temperature=0.1,
         )
         content = resp.choices[0].message.content or ""
-        # 解析 JSON
         try:
-            # 提取 JSON 块
             match = re.search(r'\{[^{}]+\}', content, re.DOTALL)
             analysis = json.loads(match.group()) if match else {}
         except json.JSONDecodeError:
@@ -210,7 +208,6 @@ class CVEResearcherAgent:
 
     def run(self, ctx: AgentContext) -> AgentResult:
         t0 = time.time()
-        # 从原始查询中提取 CVE 编号
         cve_ids = re.findall(r'CVE-\d{4}-\d{4,}', ctx.query.upper())
         if not cve_ids:
             return AgentResult("CVEResearcher", False, "查询中未包含 CVE 编号", latency_s=time.time()-t0)
@@ -219,8 +216,8 @@ class CVEResearcherAgent:
         cve = self.cve_db.get(cve_id)
         if not cve:
             return AgentResult("CVEResearcher", False, f"CVE {cve_id} 未查询到记录",
-                           {"cve_id": cve_id, "status": "not_found"},
-                           latency_s=time.time()-t0)
+                               {"cve_id": cve_id, "status": "not_found"},
+                               latency_s=time.time()-t0)
 
         prompt = f"""分析以下 CVE 漏洞并给出修复建议：
 
@@ -272,7 +269,6 @@ class KnowledgeAgent:
 
     def run(self, ctx: AgentContext, index=None, tokenizer=None, model=None, texts=None) -> AgentResult:
         t0 = time.time()
-        # 根据上下文决定查询词
         if ctx.alert_data:
             query = f"{ctx.alert_data.get('type', '')} {ctx.alert_data.get('desc', '')[:50]} 安全加固 防御措施"
         elif ctx.cve_data:
@@ -354,7 +350,6 @@ class ReportAgent:
     def run(self, ctx: AgentContext, results: list) -> AgentResult:
         t0 = time.time()
 
-        # 组装各 Agent 的结果
         parts = []
         for r in results:
             if r.success:
@@ -384,34 +379,17 @@ class ReportAgent:
 
 
 # ══════════════════════════════════════════════════════════
-#  Coordinator — 智能路由与编排
+#  Coordinator — 智能路由与异步编排
 # ══════════════════════════════════════════════════════════
 class Coordinator:
     """
-    协调多个专业 Agent，根据用户查询类型进行智能路由：
+    协调多个专业 Agent，根据用户查询类型进行智能路由（异步并发）。
 
-    查询类型判断：
-    - 包含 ALERT-xxx → AlertAnalystAgent + KnowledgeAgent + ReportAgent
-    - 包含 CVE-xxx   → CVEResearcherAgent + KnowledgeAgent + ReportAgent
-    - 其他安全问答   → KnowledgeAgent + ReportAgent
+    路由规则：
+    - ALERT-xxx → AlertAnalystAgent + KnowledgeAgent（并行）→ ReportAgent
+    - CVE-xxx   → CVEResearcherAgent + KnowledgeAgent（并行）→ ReportAgent
+    - 其他      → KnowledgeAgent → ReportAgent
     """
-
-    SYSTEM_PROMPT = """\
-你是 SecOps-Copilot 多 Agent 协调器。你的职责是：
-1. 理解用户的安全运营问题
-2. 判断问题类型并路由到合适的专业 Agent
-3. 汇总各 Agent 的结果生成最终报告
-
-## 路由规则
-- 用户提到具体告警ID（如 ALERT-xxx）→ 调用 AlertAnalystAgent + KnowledgeAgent
-- 用户提到 CVE 编号 → 调用 CVEResearcherAgent + KnowledgeAgent
-- 用户询问安全知识/最佳实践 → 调用 KnowledgeAgent
-- 所有情况最终都调用 ReportAgent 生成结构化报告
-
-## 重要
-- 不要重复调用同一 Agent 处理相同数据
-- 如果某个 Agent 失败，记录错误但继续流程
-- 最终报告要专业、完整、可操作"""
 
     def __init__(self, client: OpenAI, alerts: dict, cve_db: dict,
                  index, texts, tokenizer, model):
@@ -423,7 +401,6 @@ class Coordinator:
         self.tokenizer = tokenizer
         self.model = model
 
-        # 初始化各 Agent
         self.alert_agent  = AlertAnalystAgent(client)
         self.cve_agent    = CVEResearcherAgent(client, cve_db)
         self.kb_agent     = KnowledgeAgent(client)
@@ -439,23 +416,26 @@ class Coordinator:
             agents.append("AlertAnalystAgent")
         if has_cve:
             agents.append("CVEResearcherAgent")
-        # 知识检索几乎总是需要的
         agents.append("KnowledgeAgent")
-        # 报告生成最后总是需要的
         agents.append("ReportAgent")
         return agents
 
     def run(self, query: str) -> str:
+        """同步入口，内部使用 asyncio 并发执行。"""
         log.info(f"{'='*60}")
         log.info(f"[Coordinator] 收到查询: {query}")
         log.info(f"{'='*60}")
+        return asyncio.run(self._run_async(query))
+
+    async def _run_async(self, query: str) -> str:
+        """异步核心执行逻辑。"""
+        t_start_global = time.time()
 
         # 1. 分类路由
         agent_plan = self._classify_query(query)
         log.info(f"[Coordinator] 路由计划: {agent_plan}")
 
         # 2. 准备上下文
-        # 提取告警/CVE 数据
         alert_id  = re.search(r'ALERT-(\d+)', query)
         cve_id    = re.search(r'CVE-\d{4}-\d{4,}', query, re.IGNORECASE)
 
@@ -463,47 +443,71 @@ class Coordinator:
         if alert_id:
             aid = f"ALERT-{alert_id.group(1)}"
             ctx.alert_data = self.alerts.get(aid, {"alert_id": aid, "status": "not_found"})
-
         if cve_id:
             cid = cve_id.group(0).upper()
             ctx.cve_data = self.cve_db.get(cid, {"cve_id": cid, "status": "not_found"})
 
-        # 3. 顺序执行各 Agent
+        # 3. 并发执行独立 Agent（AlertAnalyst / CVEResearcher / Knowledge 并行）
+        parallel_agents = [n for n in agent_plan if n != "ReportAgent"]
         all_results = []
-        for agent_name in agent_plan:
-            t_start = time.time()
-            log.info(f"── 执行 {agent_name} ──")
 
-            try:
-                if agent_name == "AlertAnalystAgent":
-                    result = self.alert_agent.run(ctx)
-                elif agent_name == "CVEResearcherAgent":
-                    result = self.cve_agent.run(ctx)
-                elif agent_name == "KnowledgeAgent":
-                    result = self.kb_agent.run(ctx, self.index, self.tokenizer, self.model, self.texts)
-                elif agent_name == "ReportAgent":
-                    result = self.report_agent.run(ctx, all_results)
-                else:
-                    log.warning(f"未知 Agent: {agent_name}")
-                    continue
+        if parallel_agents:
+            log.info(f"[Coordinator] 并行执行: {parallel_agents}")
+            parallel_results = await self._run_parallel(parallel_agents, ctx)
+            all_results.extend(parallel_results)
 
-                all_results.append(result)
-                log.info(f"[{agent_name}] {'✓' if result.success else '✗'} ({result.latency_s:.1f}s)")
+        # 4. 串行执行 ReportAgent（依赖前面结果）
+        t_start = time.time()
+        log.info("── 执行 ReportAgent ──")
+        try:
+            report_result = self.report_agent.run(ctx, all_results)
+            all_results.append(report_result)
+            log.info(f"[ReportAgent] {'✓' if report_result.success else '✗'} ({report_result.latency_s:.1f}s)")
+        except Exception as e:
+            log.error(f"[ReportAgent] 执行异常: {e}")
+            all_results.append(AgentResult("ReportAgent", False, str(e), latency_s=time.time()-t_start))
 
-            except Exception as e:
-                log.error(f"[{agent_name}] 执行异常: {e}")
-                all_results.append(AgentResult(agent_name, False, str(e), latency_s=time.time()-t_start))
+        total_latency = round(time.time() - t_start_global, 1)
 
-        # 4. 输出最终报告
-        report_result = next((r for r in all_results if r.agent_name == "ReportAgent"), None)
+        # 5. 输出最终报告
         if report_result and report_result.success:
             log.info(f"{'='*60}")
-            log.info(f"[Coordinator] 最终报告已生成 ({len(report_result.content)} 字符)")
+            log.info(f"[Coordinator] 最终报告已生成 ({len(report_result.content)} 字符, 总耗时 {total_latency}s)")
             log.info(f"{'='*60}")
             return report_result.content
         else:
             error_msgs = [r.content for r in all_results if not r.success]
             return f"Agent 执行失败: {'; '.join(error_msgs)}"
+
+    async def _run_parallel(self, agent_names: list, ctx: AgentContext) -> List[AgentResult]:
+        """并发执行多个独立 Agent，返回结果列表。"""
+        async def _run_one(name: str) -> AgentResult:
+            t_start = time.time()
+            log.info(f"  ── 并发执行 {name} ──")
+            try:
+                if name == "AlertAnalystAgent":
+                    return await asyncio.to_thread(self.alert_agent.run, ctx)
+                elif name == "CVEResearcherAgent":
+                    return await asyncio.to_thread(self.cve_agent.run, ctx)
+                elif name == "KnowledgeAgent":
+                    return await asyncio.to_thread(self.kb_agent.run, ctx, self.index, self.tokenizer, self.model, self.texts)
+            except Exception as e:
+                log.error(f"[{name}] 并发执行异常: {e}")
+                return AgentResult(name, False, str(e), latency_s=time.time()-t_start)
+            return AgentResult(name, False, "未知 Agent", latency_s=time.time()-t_start)
+
+        tasks = [_run_one(name) for name in agent_names]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        formatted = []
+        for name, result in zip(agent_names, results):
+            if isinstance(result, Exception):
+                log.error(f"[{name}] 异常: {result}")
+                formatted.append(AgentResult(name, False, str(result), latency_s=0))
+            else:
+                log.info(f"[{name}] {'✓' if result.success else '✗'} ({result.latency_s:.1f}s)")
+                formatted.append(result)
+        return formatted
 
 
 # ══════════════════════════════════════════════════════════
