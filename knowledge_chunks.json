@@ -1,0 +1,62 @@
+[
+  {
+    "source_file": "cis_benchmarks.md",
+    "chunk_index": 0,
+    "content": "# CIS Kubernetes Benchmark 核心要点\n\n## 控制项摘要\n\n### 1. 集群授权（Control 1.x）\n- 1.1 禁用匿名访问\n- 1.2 禁用不安全的认证代理\n- 1.3 避免使用 Node 身份作为用户\n- 1.4 定期轮换 ServiceAccount Token\n\n### 2. 凭证配置（Control 2.x）\n- 2.1 使用加密的 etcd 存储\n- 2.2 保护 Kubernetes Secrets\n- 2.3 最小化 ServiceAccount 权限\n- 2.4 定期清理过期凭证\n\n### 3. 控制平面（Control 3.x）\n- 3.1 限制 API Server 端口暴露\n- 3.2 启用审计日志\n- 3.3 限制 Admission Controllers\n- 3.4 保护 kubelet 配置文件"
+  },
+  {
+    "source_file": "cis_benchmarks.md",
+    "chunk_index": 1,
+    "content": "### 4. 容器运行时（Control 4.x）\n- 4.1 限制容器特权\n- 4.2 禁用容器内的内核模块加载\n- 4.3 保护容器运行时 socket\n- 4.4 限制 cgroup 权限\n\n### 5. Kubernetes 策略（Control 5.x）\n- 5.1 使用 Pod 安全策略/Admission\n- 5.2 网络策略实施\n- 5.3 限制 Privilege Escalation\n- 5.4 审计异常行为\n\n### 6. 集群节点（Control 6.x）\n- 6.1 最小化系统服务\n- 6.2 限制 kubelet 权限\n- 6.3 保护节点凭证\n- 6.4 配置审计日志\n\n### 7. 工作负载安全（Control 7.x）\n- 7.1 资源请求和限制\n- 7.2 限制容器用户\n- 7.3 启用只读根文件系统\n- 7.4 限制进程通信"
+  },
+  {
+    "source_file": "cis_benchmarks.md",
+    "chunk_index": 2,
+    "content": "## 评分标准\n\n- Level 1（基础安全）：必须满足的核心控制项\n- Level 2（增强安全）：需要额外投入的强化控制项\n\n达到 Level 1 是生产环境的最低要求。"
+  },
+  {
+    "source_file": "cloud_native_security.md",
+    "chunk_index": 0,
+    "content": "# 云原生安全最佳实践\n\n## 容器安全\n\n### 镜像安全\n- 使用最小化基础镜像（Alpine、Distroless）\n- 定期扫描镜像漏洞，使用 Trivy、Clair 等工具\n- 对镜像进行数字签名，确保来源可信\n- 避免在镜像中硬编码密钥和敏感信息\n\n### 运行时安全\n- 以非 root 用户运行容器\n- 启用只读根文件系统\n- 限制容器资源（CPU、内存）\n- 使用 seccomp 和 AppArmor/SELinux profile\n- 监控容器异常行为，如进程注入、权限提升\n\n## Kubernetes 安全\n\n### 网络策略\n- 默认拒绝所有流量，按需开放\n- 使用 NetworkPolicy 实现微隔离\n- 限制 Pod 间通信范围\n\n### RBAC 权限控制\n- 遵循最小权限原则\n- 定期审计权限分配\n- 避免使用 cluster-admin\n- 为每个服务账户分配独立权限"
+  },
+  {
+    "source_file": "cloud_native_security.md",
+    "chunk_index": 1,
+    "content": "### 密钥管理\n- 使用 Secrets 或外部密钥管理（Vault、AWSCSM）\n- 避免在环境变量中明文存储密钥\n- 启用密钥加密存储\n\n## 供应链安全\n\n### CI/CD 安全\n- 实施软件物料清单（SBOM）\n- 对依赖包进行漏洞扫描\n- 启用镜像签名验证\n- 防止构建注入攻击\n\n### 依赖管理\n- 使用私有镜像仓库\n- 锁定依赖版本，定期更新\n- 监控已知漏洞数据库（CVE）\n\n## 零信任架构\n\n- 始终验证，从不信任\n- 基于身份的访问控制\n- 持续监控和评估信任等级\n- 微隔离限制横向移动\n\n## 日志与监控\n\n- 集中收集容器和集群日志\n- 实时监控异常行为\n- 建立告警规则和响应流程\n- 保留日志用于事后审计"
+  },
+  {
+    "source_file": "incident_response.md",
+    "chunk_index": 0,
+    "content": "# 云原生安全事件响应指南\n\n## 事件分类\n\n### P0 - 紧急\n- 生产环境数据泄露\n- 核心服务被入侵\n- 供应链攻击（镜像/依赖被投毒）\n- Ransomware 加密生产集群\n\n### P1 - 高\n- 容器逃逸成功\n- 横向移动扩散\n- 特权账号被盗用\n- 多节点被入侵\n\n### P2 - 中\n- 单 Pod 异常行为\n- 非生产环境渗透\n- 配置错误导致的信息泄露\n- 未授权访问尝试\n\n### P3 - 低\n- 扫描探测行为\n- 策略违规尝试\n- 日志异常但未造成损失\n\n## 响应流程（NIST 框架）\n\n### Phase 1: 准备（Preparation）\n- 建立安全运营中心（SOC）\n- 配置 SIEM 日志收集\n- 制定应急响应手册\n- 定期演练\n\n### Phase 2: 检测与分析（Detection & Analysis）\n- 识别异常指标（IOCs）\n- 收集日志和数据\n- 确定影响范围\n- 判定事件等级"
+  },
+  {
+    "source_file": "incident_response.md",
+    "chunk_index": 1,
+    "content": "### Phase 3: 遏制、根除与恢复（Containment, Eradication & Recovery）\n- 临时遏制（隔离网络、暂停服务）\n- 彻底根除（移除恶意文件、修复漏洞）\n- 恢复服务（从备份恢复、重建系统）\n- 验证恢复（确认安全状态）\n\n### Phase 4: 事后活动（Post-Incident Activity）\n- 编写事件报告\n- 复盘改进措施\n- 更新安全策略\n- 培训相关人员\n\n## 关键检查清单\n\n### 容器逃逸检测\n- [ ] 检查是否有特权容器\n- [ ] 检查容器内是否有异常进程\n- [ ] 检查容器是否尝试挂载宿主机路径\n- [ ] 检查是否存在内核漏洞利用\n\n### 数据泄露检测\n- [ ] 检查敏感数据访问日志\n- [ ] 检查异常网络流量\n- [ ] 检查未授权的数据导出行为\n- [ ] 检查 Secrets 文件访问记录"
+  },
+  {
+    "source_file": "incident_response.md",
+    "chunk_index": 2,
+    "content": "### 横向移动检测\n- [ ] 检查 Pod 间异常通信\n- [ ] 检查 ServiceAccount Token 滥用\n- [ ] 检查 RBAC 权限异常提升\n- [ ] 检查 NetworkPolicy 绕过尝试"
+  },
+  {
+    "source_file": "k8s_attack_patterns.md",
+    "chunk_index": 0,
+    "content": "# Kubernetes 常见攻击模式与防御\n\n## 常见攻击路径\n\n### 1. 容器逃逸\n**攻击手法：**\n- 利用特权容器（privileged: true）\n- 挂载宿主机 /var/run/docker.sock\n- 利用内核漏洞（如 DirtyPipe）\n- 通过 hostPath 卷访问宿主机文件系统\n\n**防御措施：**\n- 禁用特权容器\n- 使用 PodSecurityPolicy / PodSecurityAdmission\n- 限制 hostPath 卷使用\n- 定期更新内核版本"
+  },
+  {
+    "source_file": "k8s_attack_patterns.md",
+    "chunk_index": 1,
+    "content": "### 2. 权限提升\n**攻击手法：**\n- 利用 RBAC 配置错误\n- 读取 ServiceAccount Token\n- 滥用 ClusterRole 绑定\n- 通过 ConfigMap 注入恶意配置\n\n**防御措施：**\n- 严格限制 ServiceAccount 权限\n- 启用自动挂载 token 的限制\n- 定期审计 RBAC 策略\n- 使用 Kyverno 进行策略验证\n\n### 3. 横向移动\n**攻击手法：**\n- 利用网络策略缺失\n- 通过 Pod 间通信访问敏感服务\n- 利用内网服务暴露\n- 扫描和攻击同节点 Pod\n\n**防御措施：**\n- 实施网络微隔离\n- 使用服务网格（Istio）进行 mTLS\n- 限制 Pod 到 Pod 的通信\n- 监控异常网络流量"
+  },
+  {
+    "source_file": "k8s_attack_patterns.md",
+    "chunk_index": 2,
+    "content": "### 4. 数据泄露\n**攻击手法：**\n- 读取 Pod 中的 Secret\n- 拦截容器间通信流量\n- 利用日志聚合器漏洞\n- 通过挂载卷访问持久化数据\n\n**防御措施：**\n- 加密静态数据\n- 使用外部密钥管理服务\n- 实施网络加密\n- 限制日志访问权限"
+  },
+  {
+    "source_file": "k8s_attack_patterns.md",
+    "chunk_index": 3,
+    "content": "## 安全检测指标\n\n| 指标 | 说明 | 危险信号 |\n|------|------|----------|\n| 特权容器数量 | 使用 privileged 的 Pod | 任何特权容器 |\n| 主机网络 | 使用 hostNetwork | 非必要的 hostNetwork |\n| 根用户运行 | 以 root 运行容器 | 任何 root 进程 |\n| 危险 Capabilities | ADD 高风险能力 | SYS_ADMIN, NET_ADMIN |\n| 宿主机路径挂载 | hostPath 挂载 | 挂载 /、/etc、/var |\n| 公开 Service | NodePort/LoadBalancer | 敏感服务外部暴露 |"
+  }
+]

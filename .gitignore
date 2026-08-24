@@ -1,0 +1,40 @@
+# 环境变量（含 API Key，绝对不要提交）
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# 虚拟环境
+venv/
+env/
+.venv/
+
+# FAISS 向量库（体积大，运行时生成）
+faiss/
+*.index
+*.npy
+
+# 日志
+logs/
+*.log
+
+# Jupyter
+.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
